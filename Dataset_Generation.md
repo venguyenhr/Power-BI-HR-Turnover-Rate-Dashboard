@@ -1,0 +1,387 @@
+# Synthetic Dataset Generation (Python)
+
+To make this project more realistic and closer to an actual HR workforce lifecycle, I decided to generate a fully synthetic dataset using Python instead of using publicly available datasets.
+
+The dataset was designed to simulate a mid-to-large size company with approximately **1,350 active employees** per reference year, across 6 divisions and multiple job levels, covering both active headcount and employee departure records from **2018 to May 2026**.
+
+The generation logic was built around two core output files:
+
+- **EMP900** — Active Employee Base (68 columns, covering 2025 and 2026 cohorts)
+- **EMP906** — Leavers / Termination File (covering 530 leavers in 2025 and 405 leavers in Jan–May 2026)
+
+The dataset was structured to reflect several real-world workforce patterns commonly observed in HR analytics, including:
+
+- Division-level workforce distribution (TECH, FARM, FOOD, LOG, FIN, CORP)
+- Job level and grade hierarchy (Junior Professional → Senior → Manager → Director → Excom)
+- Mercer JML (Job Measurement Level) as a numeric position class system
+- Age distribution biased toward under-40 workforce (88% concentration)
+- Contract type mix (Unlimited-term vs. Fixed-term)
+- Key Position and Player Status classification (Player / Key Player / Top Talent)
+- Termination type logic: FOOD division = Company Decision (restructuring); all others = Employee Decision (voluntary)
+- Critical Departure binary flag for senior voluntary leavers (JML ≥ 52)
+- Competitor destination mapping for voluntary departures
+
+The purpose of building the dataset manually was to better understand:
+
+- HR workforce data architecture (active base vs. leaver files)
+- Termination lifecycle data modeling (last day, payroll end, benefits end, notification date)
+- Workforce seasonality patterns driven by compensation cycles (13th month, Year-End Review)
+- Relationships between job level, tenure, player status, and departure behavior
+
+---
+
+## Termination Seasonality Design
+
+One of the most important design decisions in this project was engineering **realistic departure seasonality** into the termination dates.
+
+Instead of generating random departure dates, a **peaked probability distribution** was applied per year to simulate known HR business cycles:
+
+**2025 Full Year Distribution:**
+| Month | Probability | Business Driver |
+|---|---|---|
+| January | 26% | Post-13th month bonus payout |
+| February | 22% | Post-Year-End Review communication |
+| May | 21% | Post-mid-year bonus cycle |
+| March–April | 11% combined | Low activity period |
+| June–December | 20% combined | Baseline voluntary exits |
+
+**2026 Jan–May Distribution:**
+| Month | Probability | Business Driver |
+|---|---|---|
+| January | 35% | Post-13th month bonus payout |
+| February | 30% | Post-Year-End Review communication |
+| May | 17% | Post-mid-year bonus cycle |
+| March | 10% | Tapering period |
+| April | 8% | Low activity period |
+
+This design directly produced the dashboard's observed monthly peaks — January at **9.63%** and February at **8.52%** turnover rate — matching realistic HR attrition patterns seen in Vietnamese and regional markets.
+
+---
+
+## Python Code
+
+Below is the full Python code used to generate the synthetic HR turnover and workforce dataset for this project.
+
+```python
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+
+# ==========================================
+# CONSTANTS & CONFIGURATION
+# ==========================================
+NUM_ACTIVE_PER_YEAR = 1350
+NUM_TERMINATED_2025 = 530  # ~39% Attrition logic for 2025 active base
+NUM_TERMINATED_2026 = 405  # ~30% Attrition logic up to June 2026
+START_DATE = datetime(2018, 1, 1)
+END_DATE = datetime(2026, 5, 25)
+
+# Rich Job & Position Matrix Mapping by Division and Mercer PC
+JOB_MATRIX = {
+    'TECH': {
+        'div': 'TECH-Technology Division', 'area': 'TECH-APAC', 'bu': 'TECH-SWE', 'bu_type': 'Country - Business unit', 'cc_id': '300-3101', 'cc': '300-3101_Software Engineering', 'field': 'Technology', 'spec': 'Software Engineering', 'f_area': 'Technology', 'hrm': 'Le Minh Hoang', 'legal_company': 'Tech Solutions Vietnam Co., Ltd', 'competitors': ['Competitor Tech 1', 'Competitor Tech 2', 'Silicon Valley VN Hub'],
+        'roles': {
+            '62': ('Chief Technology Officer (CTO)', 'Giám Đốc Công Nghệ'),
+            'Directors': [('Digital Transformation Director', 'Giám Đốc Chuyển Đổi Số'), ('Enterprise Solutions Director', 'Giám Đốc Giải Pháp Doanh Nghiệp')],
+            'Managers': [('IT Project Manager', 'Quản Lý Dự Án IT'), ('Software Architecture Manager', 'Quản Lý Kiến Trúc Phần Mềm'), ('DevOps Lead', 'Trưởng Nhóm DevOps')],
+            'Seniors': [('Senior Full-Stack Engineer', 'Kỹ Sư Full-Stack Cao Cấp'), ('Business Analyst (BA)', 'Chuyên Viên Phân Tích Nghiệp Vụ'), ('Senior QC Engineer', 'Kỹ Sư Kiểm Thử Cao Cấp')],
+            'Juniors': [('Front-End Developer', 'Lập Trình Viên Front-End'), ('Back-End Developer', 'Lập Trình Viên Back-End'), ('QC Tester', 'Chuyên Viên Kiểm Thử Phần Mềm')]
+        }
+    },
+    'FARM': {
+        'div': 'FARM-Farm Division', 'area': 'FARM-VN', 'bu': 'FARM-OPS', 'bu_type': 'Country - Business unit', 'cc_id': '100-1101', 'cc': '100-1101_Farm Operations', 'field': 'Agronomy', 'spec': 'Cultivation Systems', 'f_area': 'Farm Management', 'hrm': 'Nguyen Thi Lan Anh', 'legal_company': 'Farm Company Co., Ltd', 'competitors': ['Competitor Farm 1', 'Competitor Agri Holding', 'Green Eco-Farm Corp'],
+        'roles': {
+            '62': ('Chief Operating Officer (COO) - Agriculture', 'Giám Đốc Điều Hành Khối Nông Nghiệp'),
+            'Directors': [('Agricultural R&D Director', 'Giám Đốc Nghiên Cứu & Phát Triển Nông Nghiệp'), ('Smart Farming Transformation Director', 'Giám Đốc Chuyển Đổi Nông Nghiệp Thông Minh')],
+            'Managers': [('Agronomy Operations Manager', 'Quản Lý Vận Hành Nông Học'), ('Farm Plantation Manager', 'Quản Lý Trại Trồng Trọt'), ('Post-Harvest Quality Manager', 'Quản Lý Chất Lượng Sau Thu Hoạch')],
+            'Seniors': [('Senior Agronomist Specialist', 'Chuyên Gia Nông Học Cao Cấp'), ('Cultivation System Supervisor', 'Giám Sát Hệ Thống Canh Tác'), ('Farm Automation Engineer', 'Kỹ Sư Tự Động Hóa Nông Trại')],
+            'Juniors': [('Crop Field Crop Specialist', 'Chuyên Viên Theo Dõi Cây Trồng'), ('Agricultural Technician', 'Kỹ Thuật Viên Nông Nghiệp'), ('Soil & Irrigation Operator', 'Nhân Viên Thủy Lợi & Đất Đai')]
+        }
+    },
+    'FOOD': {
+        'div': 'FOOD-Food Division', 'area': 'FOOD-SEA', 'bu': 'FOOD-MFG', 'bu_type': 'Country - Business unit', 'cc_id': '200-2101', 'cc': '200-2101_Food Manufacturing', 'field': 'Food Science', 'spec': 'Process Operations', 'f_area': 'Production', 'hrm': 'Nguyen Thi Lan Anh', 'legal_company': 'Food Processing Industry Co., Ltd', 'competitors': ['Competitor Food 1', 'Global FMCG Nutrition', 'FastFood Chain Group'],
+        'roles': {
+            '62': ('Managing Director - Food Division', 'Giám Đốc Tổng Khối Chế Biến Thực Phẩm'),
+            'Directors': [('Food Manufacturing Plant Director', 'Giám Đốc Nhà Máy Chế Biến Thực Phẩm'), ('Global Food Safety & Quality Director', 'Giám Đốc Chất Lượng & An Toàn Thực Phẩm Toàn Cầu')],
+            'Managers': [('Food Processing Production Manager', 'Quản Lý Sản Xuất Chế Biến'), ('QA/QC Laboratory Manager', 'Quản Lý Phòng Thí Nghiệm QA/QC'), ('Food Product R&D Manager', 'Quản Lý Phát Triển Sản Phẩm Thực Phẩm')],
+            'Seniors': [('Senior Food Processing Engineer', 'Kỹ Sư Chế Biến Thực Phẩm Cao Cấp'), ('HACCP Food Safety Supervisor', 'Giám Sát An Toàn Thực Phẩm HACCP'), ('Production Line Shift Leader', 'Trưởng Ca Dây Chuyền Sản Xuất')],
+            'Juniors': [('Food Lab Technician', 'Kỹ Thuật Viên Phòng Thí Nghiệm'), ('Production Line Operator', 'Nhân Viên Vận Hành Dây Chuyền'), ('Food Quality Inspector', 'Kiểm Tra Viên Chất Lượng Thực Phẩm')]
+        }
+    },
+    'LOG': {
+        'div': 'LOG-Logistics Division', 'area': 'LOG-DOM', 'bu': 'LOG-DIST', 'bu_type': 'Country - Business unit', 'cc_id': '400-4101', 'cc': '400-4101_Distribution Operations', 'field': 'Supply Chain', 'spec': 'Distribution Operations', 'f_area': 'Operations', 'hrm': 'Pham Vuong Anh', 'legal_company': 'Global Supply Logistics Co., Ltd', 'competitors': ['Competitor Express 1', 'Logistics Forwarding Giant', 'Trans-VN Supply Chain'],
+        'roles': {
+            '62': ('Chief Supply Chain Officer (CSCO)', 'Giám Đốc Chuỗi Cung Ứng Toàn Cầu'),
+            'Directors': [('Omnichannel Distribution Director', 'Giám Đốc Phân Phối Đa Kênh'), ('Logistics Strategy & Transformation Director', 'Giám Đốc Chiến Lược & Chuyển Đổi Logistics')],
+            'Managers': [('Fulfillment Center General Manager', 'Quản Lý Tổng Kho Vận Center'), ('Fleet & Transportation Manager', 'Quản Lý Đội Xe & Vận Tải'), ('Customs & Compliance Manager', 'Quản Lý Hải Quan & Tuân Thủ')],
+            'Seniors': [('Senior Distribution Logistics Specialist', 'Chuyên Viên Logistics Điều Phối Cao Cấp'), ('Inventory Control Supervisor', 'Giám Sát Kiểm Soát Tồn Kho'), ('Inbound/Outbound Route Planner', 'Chuyên Viên Hoạch Định Lộ Trình')],
+            'Juniors': [('Warehouse Coordinator', 'Điều Phối Viên Kho Vận'), ('Logistics Operations Clerk', 'Nhân Viên Vận Hành Logistics'), ('Inventory Clerk', 'Nhân Viên Kiểm Đếm Tồn Kho')]
+        }
+    },
+    'FIN': {
+        'div': 'FIN-Finance Division', 'area': 'FIN-GBL', 'bu': 'FIN-FP&A', 'bu_type': 'Country - Business unit', 'cc_id': '900-5201', 'cc': '900-5201_Commercial Finance Business Partnering', 'field': 'Finance', 'spec': 'Value Architecture', 'f_area': 'Business Finance', 'hrm': 'Bui Thuy An', 'legal_company': 'Corporate Holding Financial Services LLC', 'competitors': ['Competitor Audit Big4', 'Global Advisory Group', 'FinTech Advisory Services'],
+        'roles': {
+            '62': ('Chief Financial Officer (CFO)', 'Giám Đốc Tài Chính'),
+            'Directors': [('Corporate Finance Strategy Director', 'Giám Đốc Chiến Lược Tài Chính Doanh Nghiệp')],
+            'Managers': [('Commercial Finance Business Partner', 'Quản Lý Đối Tác Kinh Doanh Tài Chính'), ('FP&A Manager', 'Quản Lý Phân Tích & Hoạch Định Tài Chính')],
+            'Seniors': [('Senior Commercial Financial Analyst', 'Chuyên Viên Phân Tích Tài Chính Thương Mại Cao Cấp'), ('Tax Compliance Specialist', 'Chuyên Viên Kế Toán Thuế & Tuân Thủ')],
+            'Juniors': [('Financial Analyst', 'Chuyên Viên Phân Tích Tài Chính'), ('Accounting Clerk', 'Nhân Viên Kế Toán Tổng Hợp')]
+        }
+    },
+    'CORP': {
+        'div': 'CORP-Corporate Services Division', 'area': 'CORP-VN', 'bu': 'CORP-HR', 'bu_type': 'Country - Common Staff', 'cc_id': '900-1505', 'cc': '900-1505_Talent Acquisition & Mobility', 'field': 'Corporate Admin', 'spec': 'Human Resources', 'f_area': 'Human Resources', 'hrm': 'Bui Thuy An', 'legal_company': 'Corporate Services Shared Platform Vietnam', 'competitors': ['Competitor Corporate Service', 'Shared Service International', 'Conglomerate HR Holding'],
+        'roles': {
+            '62': ('Chief Human Resources Officer (CHRO)', 'Giám Đốc Nhân Sự'),
+            'Directors': [('HR Strategy & Talent Director', 'Giám Đốc Chiến Lược Nhân Sự & Tài Năng')],
+            'Managers': [('Talent Acquisition & Mobility Manager', 'Quản Lý Tuyển Dụng & Điều Chuyển Nhân Tài'), ('Total Rewards Manager', 'Quản Lý Phúc Lợi & Đãi Ngộ')],
+            'Seniors': [('Talent Acquisition Specialist', 'Chuyên Viên Tuyển Dụng Nhân Tài'), ('HR Business Partner Specialist', 'Chuyên Viên Đối Tác Nhân Sự')],
+            'Juniors': [('HR Operations Administrator', 'Nhân Viên Vận Hành Nhân Sự'), ('Admin & Clerk Receptionist', 'Nhân Viên Hành Chính Lễ Tân')]
+        }
+    }
+}
+
+MANAGERS = [
+    {"name": "Nguyen Minh Quan", "id": "00170001", "div": "TECH"},
+    {"name": "Le Thi Minh Thu", "id": "00170003", "div": "TECH"},
+    {"name": "Bui Huu Phuoc", "id": "00170006", "div": "FARM"},
+    {"name": "Dinh Quang Vinh", "id": "00170011", "div": "FOOD"},
+    {"name": "Trinh Quoc Khanh", "id": "00170016", "div": "LOG"},
+    {"name": "Chau Minh Man", "id": "00170023", "div": "FIN"},
+    {"name": "Van Tien Dung", "id": "00170026", "div": "CORP"}
+]
+
+GROUP_CC_POOL = ["Marketing managers", "Representatives", "Sales Administration & other expenses", "Medical detailers", "Other Human resources", "Internet / Digital", "BA&Makeup artist training teams", "General Managment", "Product training department", "Demand planning", "Customer care", "Social Management", "Data", "Purchasing Department", "Key account managers", "Controlling/finance", "Communication Department", "Medical relations", "Corporate Operations", "Pepiniere"]
+LOCATIONS_POOL = ["VN001-Ho Chi Minh City - HO", "VN002-Hanoi Branch Office", "VN003-Danang Sales Hub", "VN005-Binh Duong Warehouse"]
+MALE_NAMES = ["Minh Khoa", "Hoang Long", "Van Thang", "Quang Hai", "Tuan Anh", "Duc Huy", "Minh Tuan"]
+FEMALE_NAMES = ["Thanh Thao", "Thi Mai", "Kim Ngan", "Thi Ha", "Thi Tuoi", "Bao Chau", "Linh Chi"]
+LAST_NAMES = ["NGUYEN", "TRAN", "LE", "PHAM", "VU", "BUI", "HOANG", "DO", "VO"]
+
+# ==========================================
+# HELPER — PEAKED TERMINATION DATE GENERATOR
+# ==========================================
+def generate_peaked_term_date(year):
+    months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    # Weight distribution: Jan-Feb (after 13th month), May (after bonus) get heavy density
+    if year == 2026:
+        months = [1, 2, 3, 4, 5]
+        probs = [0.35, 0.30, 0.10, 0.08, 0.17]
+    else:
+        probs = [0.26, 0.22, 0.06, 0.05, 0.21, 0.04, 0.04, 0.03, 0.03, 0.02, 0.02, 0.02]
+
+    selected_month = np.random.choice(months, p=probs)
+    selected_day = np.random.randint(1, 28)
+    return datetime(year, selected_month, selected_day)
+
+# ==========================================
+# POPULATION ENGINE
+# ==========================================
+def generate_base_population(total_records, year_target=2026, is_leaver=False):
+    population = []
+    div_keys = ['TECH', 'FARM', 'FOOD', 'LOG', 'FIN', 'CORP']
+    div_probs = [0.28, 0.18, 0.18, 0.18, 0.09, 0.09]
+    assigned_divs = np.random.choice(div_keys, size=total_records, p=div_probs)
+
+    # Enforce exactly 1 Excom per major division in active files
+    excom_slots = {'TECH': True, 'FARM': True, 'FOOD': True, 'LOG': True}
+    excom_indices = {}
+    if not is_leaver:
+        for slot in excom_slots.keys():
+            match_idx = np.where(assigned_divs == slot)[0]
+            if len(match_idx) > 0:
+                excom_indices[match_idx[0]] = slot
+
+    for i in range(total_records):
+        p_id = (50100000 if year_target == 2026 else 40100000) + (10000 if is_leaver else 0) + i
+        u_id = f"001{i:05d}"
+        pos_code = f"{10000000 + (20000 if is_leaver else 0) + i:08d}"
+
+        gender = "Male" if np.random.rand() > 0.5 else "Female"
+        first = np.random.choice(MALE_NAMES) if gender == "Male" else np.random.choice(FEMALE_NAMES)
+        last = np.random.choice(LAST_NAMES)
+        email = f"{first.lower().replace(' ', '')}.{last.lower()}@synthexample.com"
+
+        div_key = assigned_divs[i]
+        meta = JOB_MATRIX[div_key]
+        div_mgrs = [m for m in MANAGERS if m['div'] == div_key]
+        mgr = np.random.choice(div_mgrs) if div_mgrs else MANAGERS[0]
+
+        # Age distribution: 88% under 40 years old
+        hire_date = START_DATE + timedelta(days=int(np.random.randint(0, (END_DATE - START_DATE).days)))
+        if np.random.rand() < 0.88:
+            age_days = np.random.randint(22 * 365, 39 * 365)
+        else:
+            age_days = np.random.randint(40 * 365, 54 * 365)
+        dob = hire_date - timedelta(days=int(age_days))
+
+        # Mercer JML grade assignment
+        if i in excom_indices:
+            div_key = excom_indices[i]
+            meta = JOB_MATRIX[div_key]
+            grade, base_pay, j_lvl, jml, k_pos, player, subgroup = "DR-11", 145000000, "Director", "62", "Global Key Position", "Top Talent", "Excom"
+            title_en, title_local = meta['roles']['62']
+        else:
+            grade_roll = np.random.rand()
+            if grade_roll < 0.55:
+                jml_val = str(np.random.randint(43, 47))
+                grade, base_pay, j_lvl, jml, k_pos, player, subgroup = "IC-06", 24000000, "Professional", jml_val, "", "Player", "Executive"
+                title_en, title_local = meta['roles']['Juniors'][np.random.randint(0, len(meta['roles']['Juniors']))]
+            elif grade_roll < 0.82:
+                jml_val = str(np.random.randint(47, 52))
+                grade, base_pay, j_lvl, jml, k_pos, player, subgroup = "IC+-07", 36000000, "Professional", jml_val, "", "Player", "Executive"
+                title_en, title_local = meta['roles']['Seniors'][np.random.randint(0, len(meta['roles']['Seniors']))]
+            elif grade_roll < 0.96:
+                jml_val = str(np.random.randint(52, 58))
+                grade, base_pay, j_lvl, jml, k_pos, player, subgroup = "MG-09", 68000000, "Manager", jml_val, "Local Key Position", "Key Player", "Manager"
+                title_en, title_local = meta['roles']['Managers'][np.random.randint(0, len(meta['roles']['Managers']))]
+            else:
+                jml_val = str(np.random.randint(58, 62))
+                grade, base_pay, j_lvl, jml, k_pos, player, subgroup = "DR-11", 115000000, "Director", jml_val, "Global Key Position", "Top Talent", "Director"
+                title_en, title_local = meta['roles']['Directors'][np.random.randint(0, len(meta['roles']['Directors']))]
+
+        if year_target == 2025:
+            base_pay = int(base_pay * np.random.uniform(0.91, 0.94))
+
+        contract_type = np.random.choice(["Unlimited-term", "Fixed-term"])
+        contract_end_str = (hire_date + timedelta(days=730)).strftime('%Y-%m-%d') if contract_type == "Fixed-term" else ""
+
+        record = {
+            'Person ID': str(p_id), 'User ID': u_id, 'Pass ID': f"SYNID{u_id}", 'Position': pos_code,
+            'First Name': first, 'Last Name': last, 'Manager': mgr['name'], 'Manager ID': mgr['id'],
+            'Contract': contract_type, 'Contract End': contract_end_str, 'Gender': gender, 'DOB': dob.strftime('%Y-%m-%d'),
+            'Email': email, 'Hire Date': hire_date.strftime('%Y-%m-%d'), 'Grade': grade, 'Salary': base_pay,
+            'Job Level': j_lvl, 'JML': jml, 'Key Pos': k_pos, 'Player': player, 'Subgroup': subgroup,
+            'Div_Key': div_key, 'Org_Meta': meta, 'Title_En': title_en, 'Title_Local': title_local,
+            'Location': np.random.choice(LOCATIONS_POOL, p=[0.72, 0.14, 0.10, 0.04]), 'Group_CC': np.random.choice(GROUP_CC_POOL)
+        }
+        population.append(record)
+    return population
+
+# Build data cohorts
+active_pool_2026 = generate_base_population(NUM_ACTIVE_PER_YEAR, year_target=2026, is_leaver=False)
+active_pool_2025 = generate_base_population(NUM_ACTIVE_PER_YEAR, year_target=2025, is_leaver=False)
+
+term_pool_2025 = generate_base_population(NUM_TERMINATED_2025, year_target=2025, is_leaver=True)
+term_pool_2026 = generate_base_population(NUM_TERMINATED_2026, year_target=2026, is_leaver=True)
+
+# ==========================================
+# EMP900 GENERATOR (ACTIVE BASE — 68 COLUMNS)
+# ==========================================
+emp900_rows = []
+for emp in active_pool_2026:
+    m = emp['Org_Meta']
+    emp900_rows.append([
+        emp['Person ID'], emp['User ID'], emp['Pass ID'], emp['First Name'], emp['Last Name'], "",
+        emp['Manager'], emp['Manager ID'], emp['Contract'], m['hrm'], "", emp['Gender'],
+        emp['DOB'], emp['Email'], emp['Hire Date'], emp['Hire Date'], emp['Hire Date'], "",
+        emp['Hire Date'], emp['Hire Date'], "Active", emp['Title_En'], emp['Title_Local'], emp['Position'],
+        emp['Hire Date'], m['div'], m['area'], m['bu'], m['bu_type'], m['legal_company'],
+        "VNM-Vietnam", emp['Location'], "VNM-Vietnam", "Asia/Ho_Chi_Minh", m['cc'], "NA-N/A",
+        m['field'], m['spec'], m['field'], m['f_area'], "Hub or Country", emp['Title_En'], emp['Job Level'],
+        emp['JML'], f"{emp['Grade']} - {emp['Grade'].split('-')[0]}", 40, 1, emp['Contract End'],
+        "Long Term Employee" if emp['Contract'] == "Unlimited-term" else "Fixed Term Employee",
+        emp['Subgroup'], "40-10-30-20 General", emp['Salary'], "No", "Yes", "Completed", "", emp['Hire Date'], emp['Hire Date'],
+        "Home", "No", "January YER (Local Process)", "Yes", "", "VNM_40H-MTWTF**GENERAL-MTWTF**", emp['Key Pos'], emp['Player'], "", 2026
+    ])
+
+for emp in active_pool_2025:
+    m = emp['Org_Meta']
+    emp900_rows.append([
+        emp['Person ID'], emp['User ID'], emp['Pass ID'], emp['First Name'], emp['Last Name'], "",
+        emp['Manager'], emp['Manager ID'], emp['Contract'], m['hrm'], "", emp['Gender'],
+        emp['DOB'], emp['Email'], emp['Hire Date'], emp['Hire Date'], emp['Hire Date'], "",
+        emp['Hire Date'], emp['Hire Date'], "Active", emp['Title_En'], emp['Title_Local'], emp['Position'],
+        emp['Hire Date'], m['div'], m['area'], m['bu'], m['bu_type'], m['legal_company'],
+        "VNM-Vietnam", emp['Location'], "VNM-Vietnam", "Asia/Ho_Chi_Minh", m['cc'], "NA-N/A",
+        m['field'], m['spec'], m['field'], m['f_area'], "Hub or Country", emp['Title_En'], emp['Job Level'],
+        emp['JML'], f"{emp['Grade']} - {emp['Grade'].split('-')[0]}", 40, 1, emp['Contract End'],
+        "Long Term Employee" if emp['Contract'] == "Unlimited-term" else "Fixed Term Employee",
+        emp['Subgroup'], "40-10-30-20 General", emp['Salary'], "No", "Yes", "Completed", "", emp['Hire Date'], emp['Hire Date'],
+        "Home", "No", "January YER (Local Process)", "Yes", "", "VNM_40H-MTWTF**GENERAL-MTWTF**", emp['Key Pos'], emp['Player'], "", 2025
+    ])
+
+columns_900 = ["Person Id", "User/Employee ID", "L'Oreal Pass ID", "Legal First Name", "Legal Last Name", "Second Last Name", "Manager", "Manager User Sys ID", "Local Contract Type", "HR Manager  Job Relationships Name", "Matrix Manager  Job Relationships Name", "Legal Gender", "Date Of Birth", "Business  Email Information Email Address", "Employment Details Hire Date", "Employment Details Time & Pay Seniority", "Employment Details Group Seniority", "Employment Details International Transfer/Global Assignment Date", "Employment Details Company Seniority", "Employment Details Benefits Eligibility Start Date", "Employee Status", "Position Title in English (Standard)", "Position Title in Local Language", "Position", "Position Entry Date", "HR Division", "Area", "Business Unit", "Type Of Business Unit", "Company", "Country", "Location", "Location Group", "Timezone", "Cost Center", "Brand", "Professional Field", "Specialization", "Job Role", "Functional Area", "Organizational Area", "Role Title", "Job Level", "JML", "Local Grade", "Standard Weekly Hours", "FTE", "Contract End Date", "Employee Group", "Employee Subgroup", "Bonus Weighting", "Bonusable Salary", "On Secondment", "Non Compete Clause", "Probation Status", "Probationary Period End Date", "Job Entry Date", "Company Entry Date", "Home/Host Designation", "Management Training Program", "Salary Review Calendar", "Included in Headcount?", "Secondment Expected End Date", "Work Schedule", "Key Position Level", "All Player Status", "Employment Details Termination Date", "Year"]
+df_900 = pd.DataFrame(emp900_rows, columns=columns_900)
+
+# ==========================================
+# EMP906 GENERATOR (LEAVERS — PEAK SEASONALITY & BINARY FORMAT)
+# ==========================================
+emp906_rows = []
+for target_year, pool in [(2025, term_pool_2025), (2026, term_pool_2026)]:
+    for emp in pool:
+        m = emp['Org_Meta']
+        term_dt = generate_peaked_term_date(target_year)
+
+        if emp['Div_Key'] == 'FOOD':
+            term_type = "Company Decision"
+            term_reason = "Restructuring / Operational Redundancy"
+            sub_reason = "Operational Redundancy"
+            loc_reason = "Thay đổi cơ cấu tổ chức"
+            new_company = ""
+        else:
+            term_type = "Employee Decision"
+            term_reason = "Higher Compensation"
+            sub_reason = "Competitor Offer Integration"
+            loc_reason = "Tìm kiếm cơ hội thu nhập cao hơn"
+            new_company = np.random.choice(m['competitors'])
+
+        ok_rehire = "Yes" if term_type == "Employee Decision" else "No"
+        confidential = "Yes" if int(emp['JML']) >= 58 else "No"
+        severance = "Yes" if term_type == "Company Decision" or np.random.rand() > 0.7 else "No"
+
+        # Critical Departure: binary 1 for senior voluntary leavers (JML >= 52), else empty string
+        critical = 1 if (int(emp['JML']) >= 52 and term_type == "Employee Decision") else ""
+
+        emp906_rows.append([
+            emp['Person ID'], emp['User ID'], emp['First Name'], emp['Last Name'], emp['Gender'], emp['DOB'],
+            emp['Manager'], emp['Manager ID'], m['div'], m['area'], "VNM-Vietnam", m['legal_company'],
+            m['bu'], m['bu'], m['cc_id'], m['cc'], emp['Group_CC'], emp['Title_En'], emp['Title_Local'], emp['Location'],
+            m['field'], m['spec'], emp['Title_En'], emp['Email'], emp['Hire Date'], term_dt.strftime('%d/%m/%Y'),
+            emp['Hire Date'], emp['Hire Date'], emp['Hire Date'], "Terminated",
+            "Long Term Employee" if emp['Contract'] == "Unlimited-term" else "Fixed Term Employee",
+            emp['JML'], emp['Subgroup'],
+            "Yes" if int(emp['JML']) >= 58 else "No", "Yes" if int(emp['JML']) >= 58 else "No",
+            term_dt.strftime('%Y-%m-%d'), term_dt.strftime('%d/%m/%Y'), (term_dt - timedelta(days=30)).strftime('%Y-%m-%d'),
+            term_type, term_reason, sub_reason, loc_reason, ok_rehire, confidential, severance,
+            emp['Player'], emp['Key Pos'], term_dt.strftime('%Y-%m-%d'), term_dt.strftime('%Y-%m-%d'), term_dt.strftime('%Y-%m-%d'),
+            critical, emp['Contract'], 1, new_company
+        ])
+
+columns_906 = ["Person ID", "User ID", "Legal First Name", "Legal Last Name", "Legal Gender", "Date Of Birth", "Manager Name", "Manager User ID", "HR Division", "Area", "Country", "Company", "Business Unit Code", "Business Unit", "Cost Center ID", "Cost Center", "Group Cost Center", "Position Title", "Position Title in Local Language", "Location", "Professsional Field", "Specialization", "Job Title", "Personal Email 1", "Hire Date", "Hire Date (dd/mm/yyyy)", "Position Entry Date", "Group Seniority", "Time & Pay Seniority", "Employee Status", "Employee Group", "Global Grade (JML)", "Employee Subgroup", "Competition Clause?", "Invoke Competition Clause", "Last Day of Activity", "Termination Date (dd/mm/yyyy)", "Termination Notification Date", "Type of Termination", "Termination Reason", "Resignation Sub-Reason", "Local Termination Reason", "OK to Rehire?", "Confidential Termination?", "Severance agreement in place?", "All Player Status ", "Key Position Level", "Payroll End Date", "Benefits End Date", "Last Date Worked", "Critical Departure", "Local Contract Type", "FTE", "New company"]
+df_906 = pd.DataFrame(emp906_rows, columns=columns_906)
+
+# Temp columns for validation only
+df_906['Term_Date_Object'] = pd.to_datetime(df_906['Termination Date (dd/mm/yyyy)'], format='%d/%m/%Y')
+df_906['Term_Month'] = df_906['Term_Date_Object'].dt.month
+df_906['Term_Year'] = df_906['Term_Date_Object'].dt.year
+
+# ==========================================
+# FILE EXPORT
+# ==========================================
+with pd.ExcelWriter("EMP900_Synthetic.xlsx", engine="openpyxl") as writer1:
+    df_900.to_excel(writer1, sheet_name="EMP900", index=False)
+
+with pd.ExcelWriter("EMP906_Synthetic.xlsx", engine="openpyxl") as writer2:
+    df_906.drop(columns=['Term_Date_Object', 'Term_Month', 'Term_Year']).to_excel(writer2, sheet_name="EMP906", index=False)
+
+# ==========================================
+# DATA INTEGRITY VALIDATION REPORT
+# ==========================================
+print("--- HR DATA INTEGRITY VALIDATION REPORT ---")
+print(f"1. Total Rows in EMP900 (Active Base): {len(df_900)} rows.")
+print(f"2. JML unique format samples (No characters): {df_900['JML'].unique()[:5]}")
+print(f"3. Position format sample (8-digit numeric string): {df_900['Position'].values[0]}")
+
+age_under_40_pct = (pd.to_datetime(df_900['Date Of Birth']).dt.year >= (2026 - 40)).mean() * 100
+print(f"4. Percentage of employees under 40 years old: {age_under_40_pct:.1f}%")
+
+leaver_2025_rate = (len(df_906[df_906['Term_Year'] == 2025]) / NUM_ACTIVE_PER_YEAR) * 100
+leaver_2026_rate = (len(df_906[df_906['Term_Year'] == 2026]) / NUM_ACTIVE_PER_YEAR) * 100
+print(f"5. Turnover / Attrition Rate for 2025: {leaver_2025_rate:.1f}% (Target: ~39%)")
+print(f"6. Turnover / Attrition Rate for Jan-May 2026: {leaver_2026_rate:.1f}% (Target: ~30%)")
+
+critical_unique_values = list(df_906['Critical Departure'].unique())
+print(f"7. Unique values in 'Critical Departure': {critical_unique_values} (Must be only 1 and empty string)")
+
+print("\n8. Seasonality Trend — Leavers by Month for 2025 (Verifying Peak Months 1, 2, & 5):")
+print(df_906[df_906['Term_Year'] == 2025]['Term_Month'].value_counts().sort_index().to_dict())
+```
